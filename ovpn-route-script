@@ -1,0 +1,461 @@
+#!/usr/bin/python
+
+import argparse
+import sys
+import os
+import socket
+import subprocess
+
+def do_route_cmd(sub_cmd, network, gw, dev, metric):
+    args = ['ip', 'route', sub_cmd, network]
+
+    if gw is not None:
+        args.extend(('via', gw))
+
+    if dev is not None:
+        args.extend(('dev', dev))
+
+    if metric is not None:
+        assert isinstance(metric, int)
+
+        args.extend(('metric', str(metric)))
+
+    subprocess.run(args)
+
+    # no raised exception if ``returncode`` did equal 0
+
+def mask_to_bits(mask):
+    # for example, '255.255.240.0' is converted to 20
+
+    mask_bytes = socket.inet_pton(socket.AF_INET, mask)
+    math = 0
+    bits = 0
+
+    for b in mask_bytes:
+        math = math * 256 + b
+
+    while math:
+        if math % 2:
+            bits += 1
+        elif bits:
+            raise ValueError('unexpected mask: {!r}'.format(mask))
+
+        math //= 2
+
+    return bits
+
+class MathNet:
+    math_addr_limit = None
+    math_addr = None
+    math_net_len = None
+
+def math_net_assert(math_net):
+    assert isinstance(math_net, MathNet)
+    assert math_net.math_addr_limit is not None
+    assert math_net.math_addr is not None
+    assert math_net.math_net_len is not None
+
+def math_net_list_assert(math_net_list):
+    for math_net in math_net_list:
+        math_net_assert(math_net)
+
+def user_to_math_net(user_net):
+    assert isinstance(user_net, str)
+
+    user_net_split = user_net.rsplit(sep='/', maxsplit=1)
+
+    net_addr = user_net_split[0]
+
+    if len(user_net_split) >= 2:
+        net_bits = int(user_net_split[1])
+    else:
+        net_bits = None
+
+    try:
+        net_addr_n = socket.inet_pton(socket.AF_INET6, net_addr)
+    except (OSError, ValueError) as e:
+        try:
+            net_addr_n = socket.inet_pton(socket.AF_INET, net_addr)
+        except (OSError, ValueError):
+            raise e
+
+    math_net = MathNet()
+
+    math_net.math_addr_limit = 2 ** (len(net_addr_n) * 8)
+
+    if net_bits is None:
+        net_bits = len(net_addr_n) * 8
+
+    math_net.math_net_len = 2 ** (len(net_addr_n) * 8 - net_bits)
+
+    if math_net.math_net_len < 1:
+        math_net.math_net_len = 1
+
+    math_net.math_addr = 0
+
+    for b in net_addr_n:
+        math_net.math_addr = math_net.math_addr * 256 + b
+
+    math_net.math_addr = math_net.math_addr // math_net.math_net_len * math_net.math_net_len
+
+    return math_net
+
+def math_to_user_net(math_net):
+    math_net_assert(math_net)
+
+    net_addr_n_list = []
+
+    math_addr_limit = math_net.math_addr_limit
+    math_addr = math_net.math_addr
+
+    while math_addr_limit >= 256:
+        b = math_addr % 256
+
+        net_addr_n_list.insert(0, b)
+
+        math_addr_limit //= 256
+        math_addr //= 256
+
+    net_addr_n = bytes(net_addr_n_list)
+
+    try:
+        net_addr = socket.inet_ntop(socket.AF_INET6, net_addr_n)
+    except (OSError, ValueError) as e:
+        try:
+            net_addr = socket.inet_ntop(socket.AF_INET, net_addr_n)
+        except (OSError, ValueError):
+            raise e
+
+    if math_net.math_net_len > 1:
+        net_bits = len(net_addr_n) * 8
+
+        while \
+                net_bits > 0 and \
+                math_net.math_net_len > 2 ** (len(net_addr_n) * 8 - net_bits):
+            net_bits -= 1
+
+        user_net = '{}/{}'.format(net_addr, net_bits)
+    else:
+        user_net = net_addr
+
+    return user_net
+
+def user_to_math_net_list(user_net_list):
+    return [user_to_math_net(user_net) for user_net in user_net_list]
+
+def math_to_user_net_list(math_net_list):
+    return [math_to_user_net(math_net) for math_net in math_net_list]
+
+def calculate(add_math_net_list, sub_math_net_list):
+    math_net_list_assert(add_math_net_list)
+    math_net_list_assert(sub_math_net_list)
+
+    res_math_net_list = []
+    add_math_net_list = list(add_math_net_list)
+    del_math_net_list = []
+
+    while add_math_net_list or del_math_net_list:
+        for del_math_net in del_math_net_list:
+            res_math_net_list.remove(del_math_net)
+        del_math_net_list.clear()
+        res_math_net_list.extend(add_math_net_list)
+        add_math_net_list.clear()
+
+        for a_math_net in res_math_net_list:
+            for b_math_net in sub_math_net_list:
+                if \
+                        a_math_net in del_math_net_list or \
+                        a_math_net.math_addr_limit != b_math_net.math_addr_limit:
+                    continue
+
+                if \
+                        a_math_net.math_addr <= b_math_net.math_addr and \
+                        b_math_net.math_addr < a_math_net.math_addr + a_math_net.math_net_len:
+                    del_math_net_list.append(a_math_net)
+
+                    if a_math_net.math_addr < b_math_net.math_addr:
+                        res_math_net = MathNet()
+                        res_math_net.math_addr_limit = a_math_net.math_addr_limit
+                        res_math_net.math_addr = a_math_net.math_addr
+                        res_math_net.math_net_len = \
+                                b_math_net.math_addr - a_math_net.math_addr
+
+                        add_math_net_list.append(res_math_net)
+
+                    if a_math_net.math_addr + a_math_net.math_net_len > b_math_net.math_addr + b_math_net.math_net_len:
+                        res_math_net = MathNet()
+                        res_math_net.math_addr_limit = a_math_net.math_addr_limit
+                        res_math_net.math_addr = b_math_net.math_addr + b_math_net.math_net_len
+                        res_math_net.math_net_len = \
+                                (a_math_net.math_addr + a_math_net.math_net_len) - (b_math_net.math_addr + b_math_net.math_net_len)
+
+                        add_math_net_list.append(res_math_net)
+                elif \
+                        b_math_net.math_addr < a_math_net.math_addr and \
+                        a_math_net.math_addr < b_math_net.math_addr + b_math_net.math_net_len:
+                    del_math_net_list.append(a_math_net)
+
+                    if b_math_net.math_addr + b_math_net.math_net_len < a_math_net.math_addr + a_math_net.math_net_len:
+                        res_math_net = MathNet()
+                        res_math_net.math_addr_limit = a_math_net.math_addr_limit
+                        res_math_net.math_addr = b_math_net.math_addr + b_math_net.math_net_len
+                        res_math_net.math_net_len = (a_math_net.math_addr + a_math_net.math_net_len) - (b_math_net.math_addr + b_math_net.math_net_len)
+
+                        add_math_net_list.append(res_math_net)
+
+    return res_math_net_list
+
+def merge_optimize(math_net_list):
+    math_net_list_assert(math_net_list)
+
+    res_math_net_list = []
+    add_math_net_list = list(math_net_list)
+    del_math_net_list = []
+
+    while add_math_net_list or del_math_net_list:
+        for del_math_net in del_math_net_list:
+            res_math_net_list.remove(del_math_net)
+        del_math_net_list.clear()
+        res_math_net_list.extend(add_math_net_list)
+        add_math_net_list.clear()
+
+        for a_math_net in res_math_net_list:
+            for b_math_net in res_math_net_list:
+                if \
+                        a_math_net is b_math_net or \
+                        a_math_net in del_math_net_list or \
+                        b_math_net in del_math_net_list or \
+                        a_math_net.math_addr_limit != b_math_net.math_addr_limit or \
+                        a_math_net.math_addr > b_math_net.math_addr or \
+                        b_math_net.math_addr > a_math_net.math_addr + a_math_net.math_net_len:
+                    continue
+
+                add_math_net = MathNet()
+                add_math_net.math_addr_limit = a_math_net.math_addr_limit
+                add_math_net.math_addr = a_math_net.math_addr
+                add_math_net.math_net_len = max(
+                    a_math_net.math_net_len,
+                    b_math_net.math_addr - a_math_net.math_addr + b_math_net.math_net_len,
+                )
+
+                del_math_net_list.append(a_math_net)
+                del_math_net_list.append(b_math_net)
+                add_math_net_list.append(add_math_net)
+
+    return res_math_net_list
+
+def split_optimize(math_net_list):
+    math_net_list_assert(math_net_list)
+
+    queue_math_net_list = list(math_net_list)
+    res_math_net_list = []
+
+    while queue_math_net_list:
+        curr_queue_math_net_list = queue_math_net_list
+        queue_math_net_list = []
+
+        for math_net in curr_queue_math_net_list:
+            res_math_net_len = 1
+
+            while \
+                    res_math_net_len * 2 <= math_net.math_net_len \
+                    and \
+                    math_net.math_addr // (res_math_net_len * 2) * (res_math_net_len * 2) == math_net.math_addr:
+                res_math_net_len *= 2
+
+            if res_math_net_len == math_net.math_net_len:
+                res_math_net_list.append(math_net)
+
+                continue
+
+            assert res_math_net_len < math_net.math_net_len
+
+            a_math_net = MathNet()
+            a_math_net.math_addr_limit = math_net.math_addr_limit
+            a_math_net.math_addr = math_net.math_addr
+            a_math_net.math_net_len = res_math_net_len
+
+            b_math_net = MathNet()
+            b_math_net.math_addr_limit = math_net.math_addr_limit
+            b_math_net.math_addr = math_net.math_addr + res_math_net_len
+            b_math_net.math_net_len = math_net.math_net_len - res_math_net_len
+
+            res_math_net_list.append(a_math_net)
+            queue_math_net_list.append(b_math_net)
+
+    return res_math_net_list
+
+def sort_optimize(math_net_list):
+    math_net_list_assert(math_net_list)
+
+    return sorted(math_net_list, key=lambda math_net: math_net.math_addr)
+
+def optimize(math_net_list):
+    math_net_list = merge_optimize(math_net_list)
+    math_net_list = split_optimize(math_net_list)
+    math_net_list = sort_optimize(math_net_list)
+
+    return math_net_list
+
+def filter_route_networks(route_networks, filter_rules):
+    math_route_networks = user_to_math_net_list(route_networks)
+    math_whitelist = []
+
+    for filter_rule in filter_rules:
+        if filter_rule.startswith('^'):
+            math_net = user_to_math_net(filter_rule[1:])
+            math_whitelist = calculate(math_whitelist, [math_net])
+
+            assert isinstance(math_whitelist, list)
+        else:
+            math_net = user_to_math_net(filter_rule)
+            math_whitelist.append(math_net)
+
+    math_blacklist = calculate(
+                user_to_math_net_list(('::/0', '0.0.0.0/0')),
+                math_whitelist,
+            )
+    math_filtered = calculate(
+                math_route_networks,
+                math_blacklist,
+            )
+    math_filtered = optimize(math_filtered)
+
+    filtered_route_networks = math_to_user_net_list(math_filtered)
+
+    return filtered_route_networks
+
+def main():
+    parser = argparse.ArgumentParser(
+                description='An one-file utility to handling routes on '
+                '``OpenVPN`` client-side.'
+            )
+
+    parser.add_argument(
+                '-r',
+                '--route',
+                metavar='ADDITIONAL-ROUTE',
+                action='append',
+                help='This additional route will be added to the route '
+                'table as an ordinary route gotten from OpenVPN. Format is '
+                'host/prefix. Filter rules applies to this route as well. '
+                'The option can be used several times.'
+            )
+
+    parser.add_argument(
+                'route_metric',
+                type=int,
+                help='Metric value for VPN routes.'
+            )
+
+    parser.add_argument(
+                'filter_rule',
+                nargs='*',
+                help='Filter rule for VPN routes gotten from OpenVPN. '
+                'Format for a whilelist is host/prefix, for a blacklist is '
+                '^host/prefix. It can be combination of whitelist and '
+                'blacklist rules considered with argument\'s order. '
+                'A whitelist argument should be passed before passing a '
+                'blacklist argument, and it would be absolutely useless if '
+                'you set a blacklist without a whitelist. But a whitelist '
+                'could do without any blacklist. The last filter rule should '
+                'be terminator ";".'
+            )
+
+    args = parser.parse_args()
+
+    a_routes = args.route
+
+    if a_routes is None:
+        a_routes = []
+
+    metric = args.route_metric
+    filter_rules = []
+
+    for filter_rule in args.filter_rule:
+        if filter_rule == ';':
+            break
+
+        filter_rules.append(filter_rule)
+    else:
+        print('The last filter rule should be terminator ";"', file=sys.stderr)
+        exit(1)
+
+    if metric < 0:
+        print('invalid arg route_metric', file=sys.stderr)
+        exit(1)
+
+    script_context = os.environ['script_context']
+    script_type = os.environ['script_type']
+
+    if script_context != 'init':
+        print('invalid script_context', file=sys.stderr)
+        exit(1)
+
+    if script_type not in ('route-up', 'route-pre-down'):
+        print('invalid script_type', file=sys.stderr)
+        exit(1)
+
+    trusted_ip = os.environ.get('trusted_ip')
+    trusted_ip6 = os.environ.get('trusted_ip6')
+    dev = os.environ['dev']
+
+    route_networks_by_gw = {}
+
+    for env_name in os.environ:
+        env_net_starts = 'route_ipv6_network_'
+
+        if env_name.startswith(env_net_starts):
+            net_no = env_name[len(env_net_starts):]
+            env_gw_name = 'route_ipv6_gateway_{}'.format(net_no)
+            route_network = os.environ[env_name]
+            route_gw = os.environ.get(env_gw_name)
+
+            route_networks = route_networks_by_gw.setdefault(route_gw, [])
+            route_networks.append(route_network)
+
+        env_net_starts = 'route_network_'
+
+        if env_name.startswith(env_net_starts):
+            net_no = env_name[len(env_net_starts):]
+            env_mask_name = 'route_netmask_{}'.format(net_no)
+            env_gw_name = 'route_gateway_{}'.format(net_no)
+            route_network = '{}/{}'.format(
+                        os.environ[env_name],
+                        mask_to_bits(os.environ[env_mask_name]),
+                    )
+            route_gw = os.environ.get(env_gw_name)
+
+            route_networks = route_networks_by_gw.setdefault(route_gw, [])
+            route_networks.append(route_network)
+
+    for a_route in a_routes:
+        route_networks = route_networks_by_gw.setdefault(None, [])
+        route_networks.append(a_route)
+
+    for exp_ip in (trusted_ip, trusted_ip6):
+        if exp_ip is not None:
+            filter_rules.append('^{}'.format(exp_ip))
+
+    route_cmd_args_list = []
+
+    for route_gw in route_networks_by_gw:
+        route_networks = route_networks_by_gw[route_gw]
+        filtered_route_networks = filter_route_networks(route_networks, filter_rules)
+
+        for route_network in filtered_route_networks:
+            route_cmd_args_list.append((route_network, route_gw, dev, metric))
+
+    if script_type == 'route-up':
+        for args in route_cmd_args_list:
+            do_route_cmd('add', *args)
+    elif script_type == 'route-pre-down':
+        for args in reversed(route_cmd_args_list):
+            do_route_cmd('del', *args)
+    else:
+        raise AssertionError
+
+if __name__ == '__main__':
+    main()
+
+# vi:ts=4:sw=4:et
