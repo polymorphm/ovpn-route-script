@@ -51,10 +51,10 @@ In this example rules do next:
 * VPN routes gets ``metric=30`` for our routing table.
 * Access through VPN is allowed to networks ``10.0.0.0/8``, ``172.16.0.0/12``,
   ``192.168.0.0/16``, ``169.254.0.0/16`` but no more. Other networks are
-  forbidden (through this VPN), IPv6 networks are forbidden as
-  well.  * But networks ``192.168.88.0/24``, ``192.168.50.0/24`` are forbidden
+  forbidden (through this VPN), IPv6 networks are forbidden as well.
+* But networks ``192.168.88.0/24``, ``192.168.50.0/24`` are forbidden
   (through this VPN) in spite of allowing access to
-  ``192.168.0.0/16``.  This has more priority then rule above.
+  ``192.168.0.0/16``.  This has more priority then the rule above.
 
 Example 2: Connection To VPN With Public Internet Gateway
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
