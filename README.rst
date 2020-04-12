@@ -19,7 +19,7 @@ solved problems are:
 Version
 -------
 
-Development version.
+v2.0.0 .
 
 Example Of Using
 --------------------
