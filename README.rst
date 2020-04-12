@@ -31,6 +31,7 @@ Example of simple ensuring and filtering routes incoming from VPN server::
 
    route_up_down_cmd='/usr/bin/python
            /home/regular-user/my_projects/ovpn-route-script.proj/ovpn-route-script/ovpn-route-script
+           254
            30
            10.0.0.0/8
            172.16.0.0/12
@@ -48,7 +49,7 @@ Example of simple ensuring and filtering routes incoming from VPN server::
 
 In this example rules do next:
 
-* VPN routes gets ``metric=30`` for our routing table.
+* VPN routes gets ``metric=30 table=main(254)`` for our routing table.
 * Access through VPN is allowed to networks ``10.0.0.0/8``, ``172.16.0.0/12``,
   ``192.168.0.0/16``, ``169.254.0.0/16`` but no more. Other networks are
   forbidden (through this VPN), IPv6 networks are forbidden as well.
@@ -66,6 +67,7 @@ access (IPv4 and IPv6) through VPN, but with filtering private networks::
            /home/regular-user/my_projects/ovpn-route-script.proj/ovpn-route-script/ovpn-route-script
            -r0.0.0.0/0
            -r2000::/3
+           254
            30
            0.0.0.0/0
            ^10.0.0.0/8
@@ -87,7 +89,7 @@ In this example rules do next:
 
 * We add additional routes (options: ``-r0.0.0.0/0`` and ``-r2000::/3``)
   besides to routes incoming from VPN server by ``push``.
-* VPN routes gets ``metric=30`` for our routing table.
+* VPN routes gets ``metric=30 table=main(254)`` for our routing table.
 * All IPv4 networks are allowed to access through this VPN.
 * But networks ``10.0.0.0/8``, ``172.16.0.0/12``, ``192.168.0.0/16``,
   ``169.254.0.0/16``, ``224.0.0.0/4`` are forbidden through this VPN.

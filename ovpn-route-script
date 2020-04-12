@@ -6,7 +6,7 @@ import os
 import socket
 import subprocess
 
-def do_route_cmd(sub_cmd, network, gw, dev, metric):
+def do_route_cmd(sub_cmd, network, gw, dev, metric, table):
     args = ['ip', 'route', sub_cmd, network]
 
     if gw is not None:
@@ -19,6 +19,11 @@ def do_route_cmd(sub_cmd, network, gw, dev, metric):
         assert isinstance(metric, int)
 
         args.extend(('metric', str(metric)))
+
+    if table is not None:
+        assert isinstance(table, int)
+
+        args.extend(('table', str(table)))
 
     subprocess.run(args)
 
@@ -343,6 +348,12 @@ def main():
             )
 
     parser.add_argument(
+                'route_table',
+                type=int,
+                help='Lookup table value for VPN routes.'
+            )
+
+    parser.add_argument(
                 'route_metric',
                 type=int,
                 help='Metric value for VPN routes.'
@@ -369,6 +380,7 @@ def main():
     if a_routes is None:
         a_routes = []
 
+    table = args.route_table
     metric = args.route_metric
     filter_rules = []
 
@@ -379,6 +391,10 @@ def main():
         filter_rules.append(filter_rule)
     else:
         print('The last filter rule should be terminator ";"', file=sys.stderr)
+        exit(1)
+
+    if table < 0:
+        print('invalid arg route_table', file=sys.stderr)
         exit(1)
 
     if metric < 0:
@@ -444,7 +460,7 @@ def main():
         filtered_route_networks = filter_route_networks(route_networks, filter_rules)
 
         for route_network in filtered_route_networks:
-            route_cmd_args_list.append((route_network, route_gw, dev, metric))
+            route_cmd_args_list.append((route_network, route_gw, dev, metric, table))
 
     if script_type == 'route-up':
         for args in route_cmd_args_list:
